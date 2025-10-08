@@ -4,7 +4,7 @@ config PAIRING_LED_ENABLE
     bool "Enable LED blink during pairing state"
     default n
     help
-        If enabled, the application will toggle a GPIO at 1 Hz while the device
+        If enabled, the application will toggle a GPIO at 1 Hz while the device (Added by jizh)
         is in pairing (discoverable + connectable) state.
 
 config PAIRING_LED_GPIO

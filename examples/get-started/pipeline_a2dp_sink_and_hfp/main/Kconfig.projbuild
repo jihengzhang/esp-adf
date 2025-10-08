@@ -11,7 +11,7 @@ config PAIRING_LED_GPIO
     int "GPIO number for pairing LED"
     depends on PAIRING_LED_ENABLE
     range 0 48
-    default 22
+    default 27
     help
         Select the GPIO used to drive a status LED for pairing indication.
 

@@ -7,6 +7,7 @@
    CONDITIONS OF ANY KIND, either express or implied.
 */
 #include <string.h>
+#include <stdlib.h>
 #include <inttypes.h>
 #include "nvs_flash.h"
 #include "freertos/FreeRTOS.h"
@@ -577,6 +578,45 @@ void app_main(void)
     audio_pipeline_run(pipeline_d);
     audio_pipeline_run(pipeline_e);
 
+    // First start behavior: if not connected, try to auto-reconnect to last bonded device; if none, enter pairing.
+    // Keep LED blinking while waiting and stop it on CONNECTED event handler below.
+    do {
+        uint8_t addr[ESP_BD_ADDR_LEN];
+        if (periph_bt_get_connected_bd_addr(bt_periph, addr) == ESP_OK) {
+            // Already connected
+            break;
+        }
+        pairing_led_start();
+        int dev_num = 0;
+        if (esp_bt_gap_get_bond_device_num(&dev_num) == ESP_OK && dev_num > 0) {
+            esp_bd_addr_t *dev_list = (esp_bd_addr_t *)calloc(dev_num, sizeof(esp_bd_addr_t));
+            if (dev_list) {
+                if (esp_bt_gap_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {
+                    // Try the last one in the list first
+                    esp_bd_addr_t *target = &dev_list[dev_num - 1];
+                    uint8_t *b = (uint8_t *)(*target);
+                    ESP_LOGI(TAG, "Auto-reconnect to bonded device: %02x:%02x:%02x:%02x:%02x:%02x",
+                             b[0], b[1], b[2], b[3], b[4], b[5]);
+                    // If reconnect fails later, DISCONNECTED event will fire; use s_pairing_pending to fall back to pairing
+                    s_pairing_pending = true;
+                    esp_err_t er = esp_a2d_sink_connect(*target);
+                    if (er != ESP_OK) {
+                        ESP_LOGW(TAG, "Auto-reconnect failed (%d), enter pairing mode", er);
+                        enter_pairing_mode();
+                    }
+                } else {
+                    enter_pairing_mode();
+                }
+                free(dev_list);
+            } else {
+                enter_pairing_mode();
+            }
+        } else {
+            // No bonded devices
+            enter_pairing_mode();
+        }
+    } while (0);
+
     ESP_LOGI(TAG, "[ 7 ] Listen for all pipeline events");
     while (1) {
         audio_event_iface_msg_t msg;
@@ -662,6 +702,7 @@ void app_main(void)
                 }
                 continue;
             } else if (msg.cmd == PERIPH_BLUETOOTH_CONNECTED) {
+                s_pairing_pending = false;
                 pairing_led_stop();
             }
         }

@@ -60,7 +60,7 @@ static audio_element_handle_t  raw_read, bt_stream_reader, i2s_stream_writer, i2
 static audio_pipeline_handle_t pipeline_d, pipeline_e;
 static bool is_get_hfp = true;
 // Maintain a simple global output volume in percent (0-100) applied to codec/PA path
-static int s_output_volume = 60;
+static int s_output_volume = 80;
 
 // Pairing/Key handling state
 static bool s_set_pressed = false;
@@ -697,7 +697,12 @@ void app_main(void)
             if (msg.cmd == PERIPH_BLUETOOTH_DISCONNECTED) {
                 ESP_LOGW(TAG, "[ * ] Bluetooth disconnected");
                 if (s_pairing_pending) {
+                    // Manual pairing was requested, enter pairing mode
                     s_pairing_pending = false;
+                    enter_pairing_mode();
+                } else {
+                    // Normal disconnect, return to discoverable/connectable state with LED indication
+                    ESP_LOGI(TAG, "[ * ] Return to pairing mode after disconnect");
                     enter_pairing_mode();
                 }
                 continue;

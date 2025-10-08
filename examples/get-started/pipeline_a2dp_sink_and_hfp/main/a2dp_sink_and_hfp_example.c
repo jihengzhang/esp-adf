@@ -31,6 +31,13 @@
 #include "bluetooth_service.h"
 #include "filter_resample.h"
 #include "raw_stream.h"
+#ifdef CONFIG_PAIRING_LED_ENABLE
+#include "driver/gpio.h"
+#include "freertos/timers.h"
+#endif
+#include "esp_gap_bt_api.h"
+#include "esp_a2dp_api.h"
+#include "a2dp_stream.h"
 
 #if (CONFIG_ESP_LYRATD_MSC_V2_1_BOARD || CONFIG_ESP_LYRATD_MSC_V2_2_BOARD)
 #include "filter_resample.h"
@@ -53,6 +60,78 @@ static audio_pipeline_handle_t pipeline_d, pipeline_e;
 static bool is_get_hfp = true;
 // Maintain a simple global output volume in percent (0-100) applied to codec/PA path
 static int s_output_volume = 60;
+
+// Pairing/Key handling state
+static bool s_set_pressed = false;
+static TickType_t s_set_press_tick = 0;
+static bool s_pairing_pending = false;
+
+#ifdef CONFIG_PAIRING_LED_ENABLE
+static TimerHandle_t s_pair_led_timer = NULL;
+static bool s_pair_led_inited = false;
+static void pairing_led_toggle_cb(TimerHandle_t xTimer)
+{
+    static bool on = false;
+    gpio_set_level(CONFIG_PAIRING_LED_GPIO, on ? 1 : 0);
+    on = !on;
+}
+
+static void pairing_led_start(void)
+{
+    if (!s_pair_led_inited) {
+        gpio_config_t io = {
+            .pin_bit_mask = 1ULL << CONFIG_PAIRING_LED_GPIO,
+            .mode = GPIO_MODE_OUTPUT,
+            .pull_down_en = 0,
+            .pull_up_en = 0,
+            .intr_type = GPIO_INTR_DISABLE,
+        };
+        gpio_config(&io);
+        s_pair_led_inited = true;
+    }
+    if (!s_pair_led_timer) {
+        // 1 Hz blink -> 500ms toggle
+        s_pair_led_timer = xTimerCreate("pair_led", pdMS_TO_TICKS(500), pdTRUE, NULL, pairing_led_toggle_cb);
+    }
+    if (s_pair_led_timer) {
+        xTimerStart(s_pair_led_timer, 0);
+    }
+}
+
+static void pairing_led_stop(void)
+{
+    if (s_pair_led_timer) {
+        xTimerStop(s_pair_led_timer, 0);
+    }
+    if (s_pair_led_inited) {
+        gpio_set_level(CONFIG_PAIRING_LED_GPIO, 0);
+    }
+}
+#else
+static inline void pairing_led_start(void) {}
+static inline void pairing_led_stop(void) {}
+#endif
+
+static void enter_pairing_mode(void)
+{
+    ESP_LOGI(TAG, "[ * ] Enter pairing (discoverable/connectable)");
+    esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+    pairing_led_start();
+}
+
+static void request_pairing(esp_periph_handle_t bt_periph)
+{
+    // If already connected, disconnect first then enter pairing when DISCONNECTED event arrives
+    uint8_t addr[ESP_BD_ADDR_LEN];
+    if (periph_bt_get_connected_bd_addr(bt_periph, addr) == ESP_OK) {
+        ESP_LOGI(TAG, "[ * ] Pairing requested: disconnect current A2DP peer first");
+        s_pairing_pending = true;
+        esp_a2d_sink_disconnect(addr);
+        return;
+    }
+    // Not connected, enter pairing immediately
+    enter_pairing_mode();
+}
 
 const char *c_hf_evt_str[] = {
     "CONNECTION_STATE_EVT",              /*!< connection state changed event */
@@ -527,24 +606,43 @@ void app_main(void)
 
             continue;
         }
-        if ((msg.source_type == PERIPH_ID_TOUCH || msg.source_type == PERIPH_ID_BUTTON || msg.source_type == PERIPH_ID_ADC_BTN)
-            && (msg.cmd == PERIPH_TOUCH_TAP || msg.cmd == PERIPH_BUTTON_PRESSED || msg.cmd == PERIPH_ADC_BUTTON_PRESSED)) {
+        if ((msg.source_type == PERIPH_ID_TOUCH || msg.source_type == PERIPH_ID_BUTTON || msg.source_type == PERIPH_ID_ADC_BTN)) {
+            bool is_press_evt = (msg.cmd == PERIPH_TOUCH_TAP || msg.cmd == PERIPH_BUTTON_PRESSED || msg.cmd == PERIPH_ADC_BUTTON_PRESSED);
+            bool is_release_evt = (msg.cmd == PERIPH_TOUCH_RELEASE || msg.cmd == PERIPH_BUTTON_RELEASE || msg.cmd == PERIPH_ADC_BUTTON_RELEASE);
 
-            if ((int)msg.data == get_input_play_id()) {
+            if ((int)msg.data == get_input_play_id() && is_press_evt) {
                 ESP_LOGI(TAG, "[ * ] [Play] touch tap event");
                 periph_bluetooth_play(bt_periph);
             } else if ((int)msg.data == get_input_set_id()) {
-                // Use [Set] to re-enter pairing (discoverable + connectable)
-                ESP_LOGI(TAG, "[ * ] [Set] -> Enter pairing (discoverable/connectable)");
-                esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
-            } else if ((int)msg.data == get_input_volup_id()) {
+                // Record press timestamp on press; decide long/short on release
+                if (is_press_evt) {
+                    s_set_pressed = true;
+                    s_set_press_tick = xTaskGetTickCount();
+                }
+                // Handle release -> check duration
+                if (is_release_evt) {
+                    if (s_set_pressed) {
+                        s_set_pressed = false;
+                        TickType_t elapsed = xTaskGetTickCount() - s_set_press_tick;
+                        uint32_t ms = elapsed * portTICK_PERIOD_MS;
+                        if (ms >= 1000) {
+                            // Long press: request pairing safely (disconnect first)
+                            request_pairing(bt_periph);
+                        } else {
+                            // Short press: keep as Pause/Play toggle for convenience
+                            ESP_LOGI(TAG, "[ * ] [Set] short press -> Pause/Resume");
+                            periph_bluetooth_pause(bt_periph);
+                        }
+                    }
+                }
+            } else if ((int)msg.data == get_input_volup_id() && is_press_evt) {
                 ESP_LOGI(TAG, "[ * ] [Vol+] touch tap event");
                 // Increase local PA/codec volume
                 s_output_volume += 5;
                 if (s_output_volume > 100) s_output_volume = 100;
                 audio_hal_set_volume(board_handle->audio_hal, s_output_volume);
                 ESP_LOGI(TAG, "[ * ] Volume: %d%%", s_output_volume);
-            } else if ((int)msg.data == get_input_voldown_id()) {
+            } else if ((int)msg.data == get_input_voldown_id() && is_press_evt) {
                 ESP_LOGI(TAG, "[ * ] [Vol-] touch tap event");
                 // Decrease local PA/codec volume
                 s_output_volume -= 5;
@@ -555,14 +653,16 @@ void app_main(void)
         }
 
         /* Stop when the Bluetooth is disconnected or suspended */
-        if (msg.source_type == PERIPH_ID_BLUETOOTH
-            && msg.source == (void *)bt_periph) {
+        if (msg.source_type == PERIPH_ID_BLUETOOTH && msg.source == (void *)bt_periph) {
             if (msg.cmd == PERIPH_BLUETOOTH_DISCONNECTED) {
-                // Don't exit app; return to waiting for new connections
-                ESP_LOGW(TAG, "[ * ] Bluetooth disconnected -> stay discoverable/connectable");
-                esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
-                // Continue loop and wait for next connection
+                ESP_LOGW(TAG, "[ * ] Bluetooth disconnected");
+                if (s_pairing_pending) {
+                    s_pairing_pending = false;
+                    enter_pairing_mode();
+                }
                 continue;
+            } else if (msg.cmd == PERIPH_BLUETOOTH_CONNECTED) {
+                pairing_led_stop();
             }
         }
         /* Stop when the last pipeline element (i2s_stream_writer in this case) receives stop event */

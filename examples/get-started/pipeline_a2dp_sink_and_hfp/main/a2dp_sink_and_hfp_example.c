@@ -534,8 +534,9 @@ void app_main(void)
                 ESP_LOGI(TAG, "[ * ] [Play] touch tap event");
                 periph_bluetooth_play(bt_periph);
             } else if ((int)msg.data == get_input_set_id()) {
-                ESP_LOGI(TAG, "[ * ] [Set] touch tap event");
-                periph_bluetooth_pause(bt_periph);
+                // Use [Set] to re-enter pairing (discoverable + connectable)
+                ESP_LOGI(TAG, "[ * ] [Set] -> Enter pairing (discoverable/connectable)");
+                esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
             } else if ((int)msg.data == get_input_volup_id()) {
                 ESP_LOGI(TAG, "[ * ] [Vol+] touch tap event");
                 // Increase local PA/codec volume
@@ -557,8 +558,11 @@ void app_main(void)
         if (msg.source_type == PERIPH_ID_BLUETOOTH
             && msg.source == (void *)bt_periph) {
             if (msg.cmd == PERIPH_BLUETOOTH_DISCONNECTED) {
-                ESP_LOGW(TAG, "[ * ] Bluetooth disconnected");
-                break;
+                // Don't exit app; return to waiting for new connections
+                ESP_LOGW(TAG, "[ * ] Bluetooth disconnected -> stay discoverable/connectable");
+                esp_bt_gap_set_scan_mode(ESP_BT_CONNECTABLE, ESP_BT_GENERAL_DISCOVERABLE);
+                // Continue loop and wait for next connection
+                continue;
             }
         }
         /* Stop when the last pipeline element (i2s_stream_writer in this case) receives stop event */

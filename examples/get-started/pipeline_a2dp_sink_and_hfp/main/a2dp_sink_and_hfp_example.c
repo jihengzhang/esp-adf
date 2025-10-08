@@ -51,6 +51,8 @@ static const char *BT_HF_TAG = "BT_HF";
 static audio_element_handle_t  raw_read, bt_stream_reader, i2s_stream_writer, i2s_stream_reader;
 static audio_pipeline_handle_t pipeline_d, pipeline_e;
 static bool is_get_hfp = true;
+// Maintain a simple global output volume in percent (0-100) applied to codec/PA path
+static int s_output_volume = 60;
 
 const char *c_hf_evt_str[] = {
     "CONNECTION_STATE_EVT",              /*!< connection state changed event */
@@ -339,6 +341,19 @@ void bt_hf_client_cb(esp_hf_client_cb_event_t event, esp_hf_client_cb_param_t *p
         ESP_LOGE(BT_HF_TAG, "--volume_target: %s, volume %d",
                  c_volume_control_target_str[param->volume_control.type],
                  param->volume_control.volume);
+                 
+        // Map HFP volume (0~15 for speaker/mic) to codec volume (0~100)
+        if (param->volume_control.type == ESP_HF_VOLUME_CONTROL_TARGET_SPK) {
+            int vol = (param->volume_control.volume * 100) / 15;
+            if (vol < 0) vol = 0;
+            if (vol > 100) vol = 100;
+            s_output_volume = vol;
+            // Apply to codec; board_handle is not directly visible here, so fetch from board API
+            audio_board_handle_t bh = audio_board_init();
+            if (bh && bh->audio_hal) {
+                audio_hal_set_volume(bh->audio_hal, s_output_volume);
+            }
+        }
         break;
     case ESP_HF_CLIENT_AT_RESPONSE_EVT:
         ESP_LOGE(BT_HF_TAG, "--AT response event, code %d, cme %d",
@@ -388,6 +403,8 @@ void app_main(void)
     ESP_LOGI(TAG, "[ 2 ] Start codec chip");
     audio_board_handle_t board_handle = audio_board_init();
     audio_hal_ctrl_codec(board_handle->audio_hal, AUDIO_HAL_CODEC_MODE_DECODE, AUDIO_HAL_CTRL_START);
+    // Set an initial output volume for PA/speaker
+    audio_hal_set_volume(board_handle->audio_hal, s_output_volume);
 
     ESP_LOGI(TAG, "[ 3 ] Create audio pipeline for playback");
     audio_pipeline_cfg_t pipeline_cfg = DEFAULT_AUDIO_PIPELINE_CONFIG();
@@ -521,10 +538,18 @@ void app_main(void)
                 periph_bluetooth_pause(bt_periph);
             } else if ((int)msg.data == get_input_volup_id()) {
                 ESP_LOGI(TAG, "[ * ] [Vol+] touch tap event");
-                periph_bluetooth_next(bt_periph);
+                // Increase local PA/codec volume
+                s_output_volume += 5;
+                if (s_output_volume > 100) s_output_volume = 100;
+                audio_hal_set_volume(board_handle->audio_hal, s_output_volume);
+                ESP_LOGI(TAG, "[ * ] Volume: %d%%", s_output_volume);
             } else if ((int)msg.data == get_input_voldown_id()) {
                 ESP_LOGI(TAG, "[ * ] [Vol-] touch tap event");
-                periph_bluetooth_prev(bt_periph);
+                // Decrease local PA/codec volume
+                s_output_volume -= 5;
+                if (s_output_volume < 0) s_output_volume = 0;
+                audio_hal_set_volume(board_handle->audio_hal, s_output_volume);
+                ESP_LOGI(TAG, "[ * ] Volume: %d%%", s_output_volume);
             }
         }
 

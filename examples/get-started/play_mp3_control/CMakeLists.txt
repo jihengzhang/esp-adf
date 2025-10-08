@@ -5,6 +5,9 @@
 # in this exact order for cmake to work correctly
 cmake_minimum_required(VERSION 3.5)
 
+# Add compiler flags to suppress deprecation warnings
+# add_compile_options(-Wno-deprecated-declarations)
+
 include($ENV{ADF_PATH}/CMakeLists.txt)
 include($ENV{IDF_PATH}/tools/cmake/project.cmake)
 project(play_mp3_control)

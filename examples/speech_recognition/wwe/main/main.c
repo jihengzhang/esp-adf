@@ -334,10 +334,20 @@ static void start_recorder()
     audio_pipeline_run(pipeline);
     ESP_LOGI(TAG, "Recorder has been created");
 
-    recorder_sr_cfg_t recorder_sr_cfg = DEFAULT_RECORDER_SR_CFG(audio_sr_input_fmt, "model", AFE_TYPE_SR, AFE_MODE_HIGH_PERF);
+    recorder_sr_cfg_t recorder_sr_cfg = DEFAULT_RECORDER_SR_CFG(audio_sr_input_fmt, "model", AFE_TYPE_SR, AFE_MODE_LOW_COST);
     recorder_sr_cfg.afe_cfg->memory_alloc_mode = AFE_MEMORY_ALLOC_MORE_PSRAM;
+    // Optimize AFE configuration for better performance and lower CPU usage
+    recorder_sr_cfg.afe_cfg->afe_ringbuf_size = 1024;  // Smaller internal buffer for faster processing
     recorder_sr_cfg.afe_cfg->wakenet_init = WAKENET_ENABLE;
-    recorder_sr_cfg.afe_cfg->vad_mode = VAD_MODE_4;
+    recorder_sr_cfg.afe_cfg->vad_mode = VAD_MODE_3;  // Use lighter VAD mode
+    recorder_sr_cfg.afe_cfg->wakenet_mode = DET_MODE_2CH_90;  // Less aggressive detection
+    // Lower task priorities to prevent watchdog timeout and allow IDLE task to run
+    recorder_sr_cfg.feed_task_prio = 2;   // Lower priority to allow yielding
+    recorder_sr_cfg.fetch_task_prio = 2;  // Lower priority to allow IDLE task
+    recorder_sr_cfg.feed_task_core = 0;   // Keep feed on core 0
+    recorder_sr_cfg.fetch_task_core = 0;  // Move fetch to core 0 to share CPU time
+    // Increase ring buffer size to reduce AFE overflow warnings
+    recorder_sr_cfg.rb_size = 16 * 1024;  // Increase from default 6KB to 16KB
     recorder_sr_cfg.multinet_init = MULTINET_ENABLE;
 #if !defined(CONFIG_SR_MN_CN_NONE)
     recorder_sr_cfg.mn_language = ESP_MN_CHINESE;

@@ -587,8 +587,8 @@ void app_main(void)
             break;
         }
         pairing_led_start();
-        int dev_num = 0;
-        if (esp_bt_gap_get_bond_device_num(&dev_num) == ESP_OK && dev_num > 0) {
+        int dev_num = esp_bt_gap_get_bond_device_num();
+        if (dev_num > 0) {
             esp_bd_addr_t *dev_list = (esp_bd_addr_t *)calloc(dev_num, sizeof(esp_bd_addr_t));
             if (dev_list) {
                 if (esp_bt_gap_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {

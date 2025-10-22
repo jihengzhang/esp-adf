@@ -21,7 +21,7 @@ GPATH
 .settings
 
 # Example project files
-examples/**/sdkconfig
+# examples/**/sdkconfig
 examples/**/sdkconfig.old
 examples/**/build
 examples/**/managed_components

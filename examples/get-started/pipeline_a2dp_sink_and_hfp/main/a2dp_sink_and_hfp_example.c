@@ -60,7 +60,7 @@ static audio_element_handle_t  raw_read, bt_stream_reader, i2s_stream_writer, i2
 static audio_pipeline_handle_t pipeline_d, pipeline_e;
 static bool is_get_hfp = true;
 // Maintain a simple global output volume in percent (0-100) applied to codec/PA path
-static int s_output_volume = 60;
+static int s_output_volume = 80;
 
 // Pairing/Key handling state
 static bool s_set_pressed = false;
@@ -587,14 +587,14 @@ void app_main(void)
             break;
         }
         pairing_led_start();
-        int dev_num = 0;
-        if (esp_bt_gap_get_bond_device_num(&dev_num) == ESP_OK && dev_num > 0) {
+        int dev_num = esp_bt_gap_get_bond_device_num();
+        if (dev_num > 0) {
             esp_bd_addr_t *dev_list = (esp_bd_addr_t *)calloc(dev_num, sizeof(esp_bd_addr_t));
             if (dev_list) {
                 if (esp_bt_gap_get_bond_device_list(&dev_num, dev_list) == ESP_OK) {
                     // Try the last one in the list first
                     esp_bd_addr_t *target = &dev_list[dev_num - 1];
-                    uint8_t *b = (uint8_t *)(*target);
+                    uint8_t *b = dev_list[dev_num - 1];
                     ESP_LOGI(TAG, "Auto-reconnect to bonded device: %02x:%02x:%02x:%02x:%02x:%02x",
                              b[0], b[1], b[2], b[3], b[4], b[5]);
                     // If reconnect fails later, DISCONNECTED event will fire; use s_pairing_pending to fall back to pairing
@@ -697,7 +697,12 @@ void app_main(void)
             if (msg.cmd == PERIPH_BLUETOOTH_DISCONNECTED) {
                 ESP_LOGW(TAG, "[ * ] Bluetooth disconnected");
                 if (s_pairing_pending) {
+                    // Manual pairing was requested, enter pairing mode
                     s_pairing_pending = false;
+                    enter_pairing_mode();
+                } else {
+                    // Normal disconnect, return to discoverable/connectable state with LED indication
+                    ESP_LOGI(TAG, "[ * ] Return to pairing mode after disconnect");
                     enter_pairing_mode();
                 }
                 continue;
